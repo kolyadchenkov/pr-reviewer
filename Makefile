@@ -1,10 +1,10 @@
 .PHONY: run build docker-up docker-down test lint
 
 run:
-	go run ./...
+	go run ./cmd/server/main.go
 
 build:
-	go build -o server main.go
+	go build -o server ./cmd/server/main.go
 
 test:
 	go test ./...
