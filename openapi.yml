@@ -7,6 +7,7 @@ tags:
   - name: Users
   - name: PullRequests
   - name: Health
+  - name: Stats
 components:
   parameters:
     TeamNameQuery:
@@ -118,6 +119,24 @@ components:
         status:
           type: string
           enum: [OPEN, MERGED]
+    ReviewerStat:
+      type: object
+      required: [user_id, username, assigned_prs]
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+        assigned_prs:
+          type: integer
+    PullRequestStat:
+      type: object
+      required: [pull_request_id, reviewers]
+      properties:
+        pull_request_id:
+          type: string
+        reviewers:
+          type: integer
 paths:
   /team/add:
     post:
@@ -410,4 +429,24 @@ paths:
                     pull_request_name: Add search
                     author_id: u1
                     status: OPEN
+  /stats:
+    get:
+      tags: [Stats]
+      summary: Статистика назначений ревьюверов и PR
+      responses:
+        '200':
+          description: Всего назначений по пользователям и PR
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reviewers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ReviewerStat'
+                  pull_requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PullRequestStat'
 

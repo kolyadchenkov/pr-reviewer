@@ -90,6 +90,22 @@ type prResponse struct {
 	PR pullRequest `json:"pr"`
 }
 
+type statsResponse struct {
+	Reviewers []reviewerStat `json:"reviewers"`
+	PullReqs  []prStat       `json:"pull_requests"`
+}
+
+type reviewerStat struct {
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	AssignedPRs int    `json:"assigned_prs"`
+}
+
+type prStat struct {
+	PullRequestID string `json:"pull_request_id"`
+	Reviewers     int    `json:"reviewers"`
+}
+
 func main() {
 	conn := os.Getenv("DATABASE_URL")
 	if conn == "" {
@@ -133,6 +149,7 @@ func main() {
 	mux.HandleFunc("/pullRequest/create", srv.handlePRCreate)
 	mux.HandleFunc("/pullRequest/merge", srv.handlePRMerge)
 	mux.HandleFunc("/pullRequest/reassign", srv.handlePRReassign)
+	mux.HandleFunc("/stats", srv.handleStats)
 
 	addr := ":" + port
 	log.Printf("server listening on %s", addr)
@@ -672,6 +689,71 @@ func (s *server) handleUserReviews(w http.ResponseWriter, r *http.Request) {
 		"user_id":       userID,
 		"pull_requests": prs,
 	})
+}
+
+func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	resp := statsResponse{}
+
+	rowsReviewers, err := s.db.Query(`
+		SELECT u.user_id, u.username, COUNT(rr.pr_id) AS total
+		FROM users u
+		LEFT JOIN pull_request_reviewers rr ON rr.reviewer_id = u.user_id
+		GROUP BY u.user_id, u.username
+		HAVING COUNT(rr.pr_id) > 0
+		ORDER BY total DESC, u.user_id
+	`)
+	if err != nil {
+		writeInternal(w)
+		return
+	}
+	defer rowsReviewers.Close()
+
+	for rowsReviewers.Next() {
+		var item reviewerStat
+		if err := rowsReviewers.Scan(&item.UserID, &item.Username, &item.AssignedPRs); err != nil {
+			writeInternal(w)
+			return
+		}
+		resp.Reviewers = append(resp.Reviewers, item)
+	}
+	if err := rowsReviewers.Err(); err != nil {
+		writeInternal(w)
+		return
+	}
+
+	rowsPR, err := s.db.Query(`
+		SELECT pr.pull_request_id, COUNT(rr.reviewer_id) AS total
+		FROM pull_requests pr
+		LEFT JOIN pull_request_reviewers rr ON rr.pr_id = pr.pull_request_id
+		GROUP BY pr.pull_request_id
+		HAVING COUNT(rr.reviewer_id) > 0
+		ORDER BY pr.pull_request_id
+	`)
+	if err != nil {
+		writeInternal(w)
+		return
+	}
+	defer rowsPR.Close()
+
+	for rowsPR.Next() {
+		var item prStat
+		if err := rowsPR.Scan(&item.PullRequestID, &item.Reviewers); err != nil {
+			writeInternal(w)
+			return
+		}
+		resp.PullReqs = append(resp.PullReqs, item)
+	}
+	if err := rowsPR.Err(); err != nil {
+		writeInternal(w)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) getTeam(name string) (teamPayload, error) {
