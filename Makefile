@@ -7,7 +7,7 @@ build:
 	go build -o server ./cmd/server/main.go
 
 test:
-	go test ./...
+	go test ./... -v
 
 lint:
 	golangci-lint run ./...
