@@ -89,3 +89,13 @@ type PRStat struct {
 	Reviewers     int    `json:"reviewers"`
 }
 
+type TeamDeactivatePayload struct {
+	TeamName string `json:"team_name"`
+}
+
+type TeamDeactivateResponse struct {
+	TeamName          string   `json:"team_name"`
+	DeactivatedUsers  []string `json:"deactivated_users"`
+	ReassignedPRs     int      `json:"reassigned_prs"`
+}
+

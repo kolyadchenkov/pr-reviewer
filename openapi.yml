@@ -213,6 +213,47 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /team/deactivate:
+    post:
+      tags: [Teams]
+      summary: Массовая деактивация пользователей команды с переназначением ревьюверов в открытых PR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [team_name]
+              properties:
+                team_name:
+                  type: string
+            example:
+              team_name: backend
+      responses:
+        '200':
+          description: Пользователи деактивированы, ревьюверы переназначены
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_name:
+                    type: string
+                  deactivated_users:
+                    type: array
+                    items:
+                      type: string
+                  reassigned_prs:
+                    type: integer
+              example:
+                team_name: backend
+                deactivated_users: [u2, u3]
+                reassigned_prs: 5
+        '404':
+          description: Команда не найдена
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /users/setIsActive:
     post:
       tags: [Users]

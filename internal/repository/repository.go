@@ -16,6 +16,8 @@ type Repository interface {
 	GetUserTeam(ctx context.Context, userID string) (string, error)
 	UpdateUserActive(ctx context.Context, userID string, isActive bool) (*models.User, error)
 	GetUserPRs(ctx context.Context, userID string) ([]models.PullRequestShort, error)
+	DeactivateTeamUsers(ctx context.Context, teamName string) ([]string, error)
+	GetOpenPRsWithReviewers(ctx context.Context, reviewerIDs []string) ([]models.PullRequest, error)
 
 	// pull requests
 	PRExists(ctx context.Context, prID string) (bool, error)
@@ -29,6 +31,7 @@ type Repository interface {
 	IsReviewerAssigned(ctx context.Context, prID string, userID string) (bool, error)
 	GetReplacementCandidate(ctx context.Context, teamName string, excludeUserIDs []string, prID string) (string, error)
 	ReassignReviewer(ctx context.Context, prID string, oldUserID string, newUserID string) error
+	RemoveReviewer(ctx context.Context, prID string, userID string) error
 
 	// stats
 	GetStats(ctx context.Context) (*models.StatsResponse, error)

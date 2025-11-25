@@ -48,6 +48,7 @@ func main() {
 	mux.HandleFunc("/health", h.HandleHealth)
 	mux.HandleFunc("/team/add", h.HandleTeamAdd)
 	mux.HandleFunc("/team/get", h.HandleTeamGet)
+	mux.HandleFunc("/team/deactivate", h.HandleTeamDeactivate)
 	mux.HandleFunc("/users/setIsActive", h.HandleUserSetActive)
 	mux.HandleFunc("/users/getReview", h.HandleUserReviews)
 	mux.HandleFunc("/pullRequest/create", h.HandlePRCreate)

@@ -352,6 +352,107 @@ func (r *PostgresRepository) ReassignReviewer(ctx context.Context, prID string, 
 	return tx.Commit()
 }
 
+func (r *PostgresRepository) RemoveReviewer(ctx context.Context, prID string, userID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM pull_request_reviewers WHERE pr_id=$1 AND reviewer_id=$2
+	`, prID, userID)
+	return err
+}
+
+func (r *PostgresRepository) DeactivateTeamUsers(ctx context.Context, teamName string) ([]string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE users SET is_active=false
+		WHERE team_name=$1 AND is_active=true
+		RETURNING user_id
+	`, teamName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deactivatedIDs []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		deactivatedIDs = append(deactivatedIDs, userID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return deactivatedIDs, nil
+}
+
+func (r *PostgresRepository) GetOpenPRsWithReviewers(ctx context.Context, reviewerIDs []string) ([]models.PullRequest, error) {
+	if len(reviewerIDs) == 0 {
+		return []models.PullRequest{}, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT pr.pull_request_id, pr.pull_request_name, pr.author_id, pr.status, pr.created_at, pr.merged_at,
+		       COALESCE(
+		         (SELECT array_agg(rr2.reviewer_id ORDER BY rr2.reviewer_id)
+		          FROM pull_request_reviewers rr2
+		          WHERE rr2.pr_id = pr.pull_request_id),
+		         ARRAY[]::text[]
+		       ) as reviewers
+		FROM pull_requests pr
+		INNER JOIN pull_request_reviewers rr ON rr.pr_id = pr.pull_request_id
+		WHERE pr.status=$1 AND rr.reviewer_id = ANY($2::text[])
+	`, models.StatusOpen, pq.Array(reviewerIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prs []models.PullRequest
+	prMap := make(map[string]*models.PullRequest)
+
+	for rows.Next() {
+		var pr models.PullRequest
+		var createdAt time.Time
+		var mergedAt sql.NullTime
+		var reviewers pq.StringArray
+
+		if err := rows.Scan(&pr.ID, &pr.Name, &pr.AuthorID, &pr.Status, &createdAt, &mergedAt, &reviewers); err != nil {
+			return nil, err
+		}
+
+		pr.CreatedAt = &createdAt
+		if mergedAt.Valid {
+			pr.MergedAt = &mergedAt.Time
+		}
+		pr.Reviewers = []string(reviewers)
+
+		if _, exists := prMap[pr.ID]; !exists {
+			prMap[pr.ID] = &pr
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, pr := range prMap {
+		prs = append(prs, *pr)
+	}
+
+	return prs, nil
+}
+
 // stats
 
 func (r *PostgresRepository) GetStats(ctx context.Context) (*models.StatsResponse, error) {
