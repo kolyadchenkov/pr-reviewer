@@ -1,25 +1,27 @@
 package handlers
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"log"
-	"math/rand"
 	"net/http"
 
 	"pr-reviewer-service/internal/models"
+	"pr-reviewer-service/internal/repository"
 )
 
 type Handler struct {
-	db     *sql.DB
-	random *rand.Rand
+	repo repository.Repository
 }
 
-func New(db *sql.DB, random *rand.Rand) *Handler {
+func New(repo repository.Repository) *Handler {
 	return &Handler{
-		db:     db,
-		random: random,
+		repo: repo,
 	}
+}
+
+func getContext(r *http.Request) context.Context {
+	return r.Context()
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
@@ -47,4 +49,3 @@ func writeInternal(w http.ResponseWriter) {
 func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 }
-

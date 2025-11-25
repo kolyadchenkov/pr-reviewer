@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"pr-reviewer-service/internal/models"
 )
@@ -32,15 +31,10 @@ func (h *Handler) HandlePRCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.db.Begin()
-	if err != nil {
-		writeInternal(w)
-		return
-	}
-	defer tx.Rollback()
+	ctx := getContext(r)
 
-	var exists bool
-	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pull_requests WHERE pull_request_id=$1)", payload.ID).Scan(&exists); err != nil {
+	exists, err := h.repo.PRExists(ctx, payload.ID)
+	if err != nil {
 		writeInternal(w)
 		return
 	}
@@ -49,8 +43,8 @@ func (h *Handler) HandlePRCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var teamName string
-	if err := tx.QueryRow("SELECT team_name FROM users WHERE user_id=$1", payload.AuthorID).Scan(&teamName); err != nil {
+	teamName, err := h.repo.GetUserTeam(ctx, payload.AuthorID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "author not found")
 			return
@@ -59,63 +53,31 @@ func (h *Handler) HandlePRCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = tx.Exec(`
-		INSERT INTO pull_requests(pull_request_id, pull_request_name, author_id, status)
-		VALUES($1, $2, $3, $4)
-	`, payload.ID, payload.Name, payload.AuthorID, models.StatusOpen)
+	if err := h.repo.CreatePR(ctx, &payload); err != nil {
+		writeInternal(w)
+		return
+	}
+
+	candidates, err := h.repo.GetCandidates(ctx, teamName, []string{payload.AuthorID}, 2)
 	if err != nil {
 		writeInternal(w)
 		return
 	}
 
-	candidatesRows, err := tx.Query(`
-		SELECT user_id FROM users
-		WHERE team_name=$1 AND is_active=true AND user_id<>$2
-		ORDER BY random()
-		LIMIT 2
-	`, teamName, payload.AuthorID)
-	if err != nil {
-		writeInternal(w)
-		return
-	}
-	defer candidatesRows.Close()
-
-	var reviewers []string
-	for candidatesRows.Next() {
-		var id string
-		if err := candidatesRows.Scan(&id); err != nil {
-			writeInternal(w)
-			return
-		}
-		reviewers = append(reviewers, id)
-	}
-	if err := candidatesRows.Err(); err != nil {
-		writeInternal(w)
-		return
-	}
-
-	for _, reviewer := range reviewers {
-		if _, err := tx.Exec(`
-			INSERT INTO pull_request_reviewers(pr_id, reviewer_id)
-			VALUES($1, $2)
-		`, payload.ID, reviewer); err != nil {
+	if len(candidates) > 0 {
+		if err := h.repo.AssignReviewers(ctx, payload.ID, candidates); err != nil {
 			writeInternal(w)
 			return
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		writeInternal(w)
-		return
-	}
-
-	pr, err := h.getPR(payload.ID)
+	pr, err := h.repo.GetPR(ctx, payload.ID)
 	if err != nil {
 		writeInternal(w)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, models.PRResponse{PR: pr})
+	writeJSON(w, http.StatusCreated, models.PRResponse{PR: *pr})
 }
 
 func (h *Handler) HandlePRMerge(w http.ResponseWriter, r *http.Request) {
@@ -136,18 +98,10 @@ func (h *Handler) HandlePRMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.db.Begin()
-	if err != nil {
-		writeInternal(w)
-		return
-	}
-	defer tx.Rollback()
+	ctx := getContext(r)
 
-	var status string
-	var mergedAt sql.NullTime
-	if err := tx.QueryRow(`
-		SELECT status, merged_at FROM pull_requests WHERE pull_request_id=$1
-	`, payload.ID).Scan(&status, &mergedAt); err != nil {
+	_, err := h.repo.GetPR(ctx, payload.ID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "PR not found")
 			return
@@ -156,31 +110,18 @@ func (h *Handler) HandlePRMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
-	if status != models.StatusMerged {
-		if _, err := tx.Exec(`
-			UPDATE pull_requests SET status=$1, merged_at=$2 WHERE pull_request_id=$3
-		`, models.StatusMerged, now, payload.ID); err != nil {
-			writeInternal(w)
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			writeInternal(w)
-			return
-		}
-	} else {
-		if err := tx.Commit(); err != nil {
-			writeInternal(w)
-			return
-		}
+	if err := h.repo.MergePR(ctx, payload.ID); err != nil {
+		writeInternal(w)
+		return
 	}
 
-	pr, err := h.getPR(payload.ID)
+	pr, err := h.repo.GetPR(ctx, payload.ID)
 	if err != nil {
 		writeInternal(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, models.PRResponse{PR: pr})
+
+	writeJSON(w, http.StatusOK, models.PRResponse{PR: *pr})
 }
 
 func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
@@ -201,17 +142,10 @@ func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.db.Begin()
-	if err != nil {
-		writeInternal(w)
-		return
-	}
-	defer tx.Rollback()
+	ctx := getContext(r)
 
-	var status, authorID string
-	if err := tx.QueryRow(`
-		SELECT status, author_id FROM pull_requests WHERE pull_request_id=$1
-	`, payload.ID).Scan(&status, &authorID); err != nil {
+	status, err := h.repo.GetPRStatus(ctx, payload.ID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "PR not found")
 			return
@@ -225,12 +159,8 @@ func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var assigned bool
-	if err := tx.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1 FROM pull_request_reviewers WHERE pr_id=$1 AND reviewer_id=$2
-		)
-	`, payload.ID, payload.OldUserID).Scan(&assigned); err != nil {
+	assigned, err := h.repo.IsReviewerAssigned(ctx, payload.ID, payload.OldUserID)
+	if err != nil {
 		writeInternal(w)
 		return
 	}
@@ -239,10 +169,8 @@ func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var teamName string
-	if err := tx.QueryRow(`
-		SELECT team_name FROM users WHERE user_id=$1
-	`, payload.OldUserID).Scan(&teamName); err != nil {
+	teamName, err := h.repo.GetUserTeam(ctx, payload.OldUserID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "user not found")
 			return
@@ -251,17 +179,15 @@ func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row := tx.QueryRow(`
-		SELECT user_id FROM users
-		WHERE team_name=$1 AND is_active=true AND user_id<>$2 AND user_id<>$3
-		AND user_id NOT IN (SELECT reviewer_id FROM pull_request_reviewers WHERE pr_id=$4)
-		ORDER BY random()
-		LIMIT 1
-	`, teamName, payload.OldUserID, authorID, payload.ID)
+	authorID, err := h.repo.GetPRAuthor(ctx, payload.ID)
+	if err != nil {
+		writeInternal(w)
+		return
+	}
 
-	var replacement string
-	if err := row.Scan(&replacement); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	replacement, err := h.repo.GetReplacementCandidate(ctx, teamName, []string{payload.OldUserID, authorID}, payload.ID)
+	if err != nil {
+		if err.Error() == "no candidate found" {
 			writeError(w, http.StatusConflict, "NO_CANDIDATE", "no active replacement candidate in team")
 			return
 		}
@@ -269,75 +195,19 @@ func (h *Handler) HandlePRReassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := tx.Exec(`
-		DELETE FROM pull_request_reviewers WHERE pr_id=$1 AND reviewer_id=$2
-	`, payload.ID, payload.OldUserID); err != nil {
+	if err := h.repo.ReassignReviewer(ctx, payload.ID, payload.OldUserID, replacement); err != nil {
 		writeInternal(w)
 		return
 	}
 
-	if _, err := tx.Exec(`
-		INSERT INTO pull_request_reviewers(pr_id, reviewer_id) VALUES($1, $2)
-	`, payload.ID, replacement); err != nil {
-		writeInternal(w)
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		writeInternal(w)
-		return
-	}
-
-	pr, err := h.getPR(payload.ID)
+	pr, err := h.repo.GetPR(ctx, payload.ID)
 	if err != nil {
 		writeInternal(w)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"pr":          pr,
+		"pr":          *pr,
 		"replaced_by": replacement,
 	})
 }
-
-func (h *Handler) getPR(id string) (models.PullRequest, error) {
-	var pr models.PullRequest
-	var createdAt time.Time
-	var mergedAt sql.NullTime
-
-	err := h.db.QueryRow(`
-		SELECT pull_request_id, pull_request_name, author_id, status, created_at, merged_at
-		FROM pull_requests
-		WHERE pull_request_id=$1
-	`, id).Scan(&pr.ID, &pr.Name, &pr.AuthorID, &pr.Status, &createdAt, &mergedAt)
-	if err != nil {
-		return pr, err
-	}
-
-	pr.CreatedAt = &createdAt
-	if mergedAt.Valid {
-		pr.MergedAt = &mergedAt.Time
-	}
-
-	rows, err := h.db.Query(`
-		SELECT reviewer_id FROM pull_request_reviewers WHERE pr_id=$1 ORDER BY reviewer_id
-	`, id)
-	if err != nil {
-		return pr, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var reviewer string
-		if err := rows.Scan(&reviewer); err != nil {
-			return pr, err
-		}
-		pr.Reviewers = append(pr.Reviewers, reviewer)
-	}
-	if err := rows.Err(); err != nil {
-		return pr, err
-	}
-
-	return pr, nil
-}
-
